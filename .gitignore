@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Generated data / models (regenerate with the scripts, don't commit)
+backend/security_scanner.db
+backend/*.log
+ml/telemetry.csv
+ml/model/*.joblib
+trivy-reports/
+dashboard/*.log
+
+# Env
+.env
+
+# OS
+.DS_Store

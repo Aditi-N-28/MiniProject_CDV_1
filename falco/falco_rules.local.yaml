@@ -1,0 +1,51 @@
+# Custom Falco rules for the demo-target-service workload, layered on top
+# of Falco's default rule set (falco_rules.yaml, not modified here).
+# These cover the runtime-monitoring examples described in the project
+# report (Scenario B: shell/network/file anomalies after a clean scan).
+
+- macro: demo_namespace
+  condition: k8s.ns.name = "secure-devops-demo"
+
+- rule: Shell Spawned in Demo Service Container
+  desc: >
+    Alerts when an interactive shell is spawned inside the demo-target-service
+    container — the demo app never legitimately opens a shell at runtime.
+  condition: >
+    spawned_process and demo_namespace and
+    container.image.repository = "demo-target-service" and
+    proc.name in (bash, sh, zsh)
+  output: >
+    Shell spawned in demo-target-service container
+    (user=%user.name command=%proc.cmdline container=%container.name pod=%k8s.pod.name)
+  priority: WARNING
+  tags: [demo-project, shell, runtime]
+
+- rule: Unexpected Outbound Network Connection from Demo Service
+  desc: >
+    Alerts on outbound connections from the demo service to destinations
+    outside the expected internal service range — a classic exfiltration
+    or C2 pattern.
+  condition: >
+    outbound and demo_namespace and
+    container.image.repository = "demo-target-service" and
+    not fd.sip in (allowed_outbound_ips)
+  output: >
+    Unexpected outbound connection from demo-target-service
+    (command=%proc.cmdline connection=%fd.name container=%container.name)
+  priority: CRITICAL
+  tags: [demo-project, network, runtime]
+
+- list: allowed_outbound_ips
+  items: []   # populate with internal cluster/service IPs the app legitimately calls
+
+- rule: Sensitive File Read in Demo Service
+  desc: Alerts when the demo service reads a file outside its expected working set.
+  condition: >
+    open_read and demo_namespace and
+    container.image.repository = "demo-target-service" and
+    fd.name in (/etc/shadow, /etc/passwd, /root/.ssh/id_rsa)
+  output: >
+    Sensitive file read in demo-target-service
+    (file=%fd.name command=%proc.cmdline container=%container.name)
+  priority: CRITICAL
+  tags: [demo-project, filesystem, runtime]

@@ -1,0 +1,37 @@
+# Falco configuration snippet — merge relevant keys into your cluster's
+# /etc/falco/falco.yaml (or the Helm values.yaml if installed via the
+# falcosecurity Helm chart). Not a complete standalone config.
+
+# Use the eBPF probe (not the older kernel-module driver) for telemetry.
+engine:
+  kind: ebpf
+
+# Only watch the namespace this project deploys to, to keep noise down
+# during the demo.
+watch_config_files: true
+
+json_output: true
+json_include_output_property: true
+
+# Forward every alert as an HTTP POST so the FastAPI backend can ingest it
+# and hand it to the Isolation Forest feature pipeline in near real time.
+http_output:
+  enabled: true
+  url: "http://localhost:8000/runtime-events"
+
+# Also keep a local rotating log for offline feature extraction /
+# retraining (see ml/feature_extraction.py).
+file_output:
+  enabled: true
+  keep_alive: false
+  filename: /var/log/falco/events.log
+
+stdout_output:
+  enabled: true
+
+priority: debug
+
+# Load the CNCF default rule set plus this project's custom rules.
+rules_file:
+  - /etc/falco/falco_rules.yaml
+  - /etc/falco/falco_rules.local.yaml

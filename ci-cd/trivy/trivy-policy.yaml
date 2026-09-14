@@ -1,0 +1,15 @@
+# Security policy referenced by the pipeline's gating logic.
+# Edit this file to change what "fails the build" without touching the
+# Jenkinsfile or the scan scripts.
+
+severity_threshold: "CRITICAL,HIGH"   # fail the pipeline on these severities
+ignore_unfixed: true                  # don't fail on CVEs with no available fix yet
+
+scan_targets:
+  image: true
+  kubernetes_config: true
+  filesystem: false
+
+notify:
+  slack_on_failure: true
+  slack_on_success: false

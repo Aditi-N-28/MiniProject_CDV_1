@@ -1,0 +1,33 @@
+# DO NOT DEPLOY THIS FILE. It exists only as a "before" reference so that
+# `trivy config` has something to flag when you demo the pre-deployment
+# scanning stage — compare it against deployment.yaml (the "after"/hardened
+# version that is actually applied to the cluster). Useful talking points
+# for the viva: privileged containers, missing resource limits, running as
+# root, and host network access are all classic Kubernetes misconfigurations.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-target-service-insecure
+  namespace: secure-devops-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-target-service-insecure
+  template:
+    metadata:
+      labels:
+        app: demo-target-service-insecure
+    spec:
+      hostNetwork: true
+      containers:
+        - name: demo-target-service
+          image: demo-target-service:latest
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            allowPrivilegeEscalation: true
+          ports:
+            - containerPort: 8000
+          # No resource requests/limits set — flagged by Trivy config checks.
+          # No readOnlyRootFilesystem, no dropped capabilities — flagged too.
