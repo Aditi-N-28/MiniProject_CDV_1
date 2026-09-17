@@ -1,19 +1,19 @@
-FROM python:3.13-slim
+FROM python:3.13-alpine
 
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk update \
+    && apk upgrade \
+    && rm -rf /var/cache/apk/*
 
 COPY requirements.txt .
 
 RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install --no-cache-dir --upgrade setuptools
+    && pip install --no-cache-dir --upgrade setuptools msgpack
 
 COPY main.py .
 
-RUN useradd --create-home --shell /bin/bash appuser \
+RUN adduser -D -s /bin/sh appuser \
     && chown -R appuser:appuser /app
 
 USER appuser
