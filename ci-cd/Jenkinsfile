@@ -22,14 +22,15 @@ pipeline {
                 checkout scm
 
                 sh '''
-                    echo "Project files:"
+                    echo "================ PROJECT FILES ================"
                     ls -la
 
-                    echo "App files:"
+                    echo "================ APP FILES ================"
                     ls -la app
                 '''
             }
         }
+
 
         stage('Build Docker Image') {
             steps {
@@ -44,28 +45,51 @@ pipeline {
             }
         }
 
+
         stage('Verify Docker Image') {
             steps {
                 echo "Verifying Docker image..."
 
                 sh '''
+                    echo "================ IMAGE INSPECT ================"
+
                     docker image inspect ${IMAGE_NAME}:${IMAGE_TAG}
 
-                    echo "Running user:"
-                    docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} id
+                    echo "================ RUNNING USER ================"
 
-                    echo "Checking Python packages:"
-                    docker run --rm ${IMAGE_NAME}:${IMAGE_TAG} \
-                        python -c "import fastapi,starlette,uvicorn,setuptools,msgpack; print('FastAPI:',fastapi.__version__); print('Starlette:',starlette.__version__); print('Uvicorn:',uvicorn.__version__); print('Setuptools:',setuptools.__version__); print('Msgpack:',msgpack.__version__)"
+                    docker run --rm \
+                        ${IMAGE_NAME}:${IMAGE_TAG} \
+                        id
+
+                    echo "================ PYTHON PACKAGES ================"
+
+                    docker run --rm \
+                        ${IMAGE_NAME}:${IMAGE_TAG} \
+                        python -c "
+import fastapi
+import starlette
+import uvicorn
+import setuptools
+import msgpack
+
+print('FastAPI:', fastapi.__version__)
+print('Starlette:', starlette.__version__)
+print('Uvicorn:', uvicorn.__version__)
+print('Setuptools:', setuptools.__version__)
+print('Msgpack:', msgpack.__version__)
+"
                 '''
             }
         }
+
 
         stage('Trivy Image Scan') {
             steps {
                 echo "Scanning Docker image with Trivy..."
 
                 sh '''
+                    echo "================ TRIVY IMAGE SCAN ================"
+
                     trivy image \
                         --scanners vuln \
                         --severity CRITICAL,HIGH \
@@ -73,6 +97,8 @@ pipeline {
                         --format table \
                         ${IMAGE_NAME}:${IMAGE_TAG} \
                         | tee trivy-image-scan.txt
+
+                    echo "================ TRIVY JSON REPORT ================"
 
                     trivy image \
                         --scanners vuln \
@@ -85,34 +111,90 @@ pipeline {
             }
         }
 
+
+        stage('Generate Trivy SBOM') {
+            steps {
+                echo "Generating CycloneDX SBOM..."
+
+                sh '''
+                    echo "================ GENERATING SBOM ================"
+
+                    trivy image \
+                        --format cyclonedx \
+                        --output trivy-image-sbom.json \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+
+                    echo "SBOM generated successfully."
+
+                    ls -lh trivy-image-sbom.json
+                '''
+            }
+        }
+
+
+        stage('Verify Trivy SBOM Packages') {
+            steps {
+                echo "Checking package versions detected by Trivy..."
+
+                sh '''
+                    echo "================ SEARCHING SBOM ================"
+
+                    python3 - <<'PY'
+import json
+
+with open("trivy-image-sbom.json", "r") as f:
+    data = json.load(f)
+
+components = data.get("components", [])
+
+for component in components:
+    name = component.get("name", "")
+    version = component.get("version", "")
+
+    if name.lower() in ["msgpack", "setuptools"]:
+        print(f"SBOM PACKAGE: {name} -> {version}")
+PY
+                '''
+            }
+        }
+
+
         stage('Prepare Kubernetes Scan') {
             steps {
                 echo "Preparing Kubernetes manifests..."
 
                 sh '''
                     rm -rf trivy-scan-k8s
+
                     mkdir -p trivy-scan-k8s
 
                     cp k8s/deployment.yaml trivy-scan-k8s/
                     cp k8s/namespace.yaml trivy-scan-k8s/
                     cp k8s/service.yaml trivy-scan-k8s/
 
+                    echo "================ K8S FILES ================"
+
                     ls -la trivy-scan-k8s
                 '''
             }
         }
+
 
         stage('Trivy Kubernetes Scan') {
             steps {
                 echo "Scanning Kubernetes configuration..."
 
                 sh '''
+                    echo "================ KUBERNETES SCAN ================"
+
                     trivy config \
                         --severity CRITICAL,HIGH \
                         --exit-code 0 \
                         --format table \
                         trivy-scan-k8s \
                         | tee trivy-k8s-scan.txt
+
+                    echo "================ KUBERNETES JSON ================"
 
                     trivy config \
                         --severity CRITICAL,HIGH \
@@ -124,19 +206,20 @@ pipeline {
             }
         }
 
+
         stage('Publish Scan Results') {
             steps {
                 echo "Publishing scan results to FastAPI..."
 
                 sh '''
-                    echo "Checking FastAPI backend..."
+                    echo "================ BACKEND HEALTH ================"
 
                     curl -s --fail \
                         ${BACKEND_URL}/health
 
                     echo ""
 
-                    echo "Publishing image report..."
+                    echo "================ PUBLISH IMAGE REPORT ================"
 
                     curl -s --fail \
                         -X POST \
@@ -147,7 +230,7 @@ pipeline {
 
                     echo ""
 
-                    echo "Publishing Kubernetes report..."
+                    echo "================ PUBLISH K8S REPORT ================"
 
                     curl -s --fail \
                         -X POST \
@@ -155,15 +238,22 @@ pipeline {
                         --data-binary @trivy-k8s-report.json \
                         ${BACKEND_URL}/ingest/trivy-report \
                         || echo "Kubernetes report publishing failed"
+
+                    echo ""
                 '''
             }
         }
+
 
         stage('Security Gate') {
             steps {
                 script {
 
-                    echo "Running Docker image security gate..."
+                    echo "============================================"
+                    echo "          SECURITY GATE"
+                    echo "============================================"
+
+                    echo "Checking Docker image vulnerabilities..."
 
                     def imageGate = sh(
                         script: """
@@ -176,7 +266,8 @@ pipeline {
                         returnStatus: true
                     )
 
-                    echo "Running Kubernetes security gate..."
+
+                    echo "Checking Kubernetes configuration..."
 
                     def kubernetesGate = sh(
                         script: """
@@ -188,8 +279,12 @@ pipeline {
                         returnStatus: true
                     )
 
-                    echo "Docker Image Gate: ${imageGate}"
-                    echo "Kubernetes Config Gate: ${kubernetesGate}"
+
+                    echo "============================================"
+                    echo "Docker Image Gate      : ${imageGate}"
+                    echo "Kubernetes Config Gate : ${kubernetesGate}"
+                    echo "============================================"
+
 
                     if (imageGate != 0) {
                         echo "❌ Docker Image Security Gate FAILED"
@@ -197,20 +292,29 @@ pipeline {
                         echo "✅ Docker Image Security Gate PASSED"
                     }
 
+
                     if (kubernetesGate != 0) {
                         echo "❌ Kubernetes Security Gate FAILED"
                     } else {
                         echo "✅ Kubernetes Security Gate PASSED"
                     }
 
+
                     if (imageGate != 0 || kubernetesGate != 0) {
-                        error("Security Gate FAILED. Deployment stopped.")
+
+                        error(
+                            "Security Gate FAILED. Deployment stopped."
+                        )
                     }
 
+
+                    echo "============================================"
                     echo "✅ ALL SECURITY GATES PASSED"
+                    echo "============================================"
                 }
             }
         }
+
 
         stage('Deploy to Kubernetes') {
             steps {
@@ -219,46 +323,59 @@ pipeline {
                 sh '''
                     export KUBECONFIG=${KUBECONFIG}
 
-                    echo "Kubernetes nodes:"
+                    echo "================ KUBERNETES NODES ================"
+
                     kubectl get nodes
 
-                    echo "Applying namespace:"
-                    kubectl apply -f k8s/namespace.yaml
+                    echo "================ APPLY NAMESPACE ================"
 
-                    echo "Applying deployment:"
-                    kubectl apply -f k8s/deployment.yaml
+                    kubectl apply \
+                        -f k8s/namespace.yaml
 
-                    echo "Applying service:"
-                    kubectl apply -f k8s/service.yaml
+                    echo "================ APPLY DEPLOYMENT ================"
 
-                    echo "Updating image:"
+                    kubectl apply \
+                        -f k8s/deployment.yaml
+
+                    echo "================ APPLY SERVICE ================"
+
+                    kubectl apply \
+                        -f k8s/service.yaml
+
+                    echo "================ UPDATE IMAGE ================"
+
                     kubectl set image \
                         deployment/${K8S_DEPLOYMENT} \
                         ${K8S_DEPLOYMENT}=${IMAGE_NAME}:${IMAGE_TAG} \
                         -n ${K8S_NAMESPACE}
 
-                    echo "Waiting for rollout:"
+                    echo "================ WAIT FOR ROLLOUT ================"
+
                     kubectl rollout status \
                         deployment/${K8S_DEPLOYMENT} \
                         -n ${K8S_NAMESPACE} \
                         --timeout=180s
 
-                    echo "Deployment:"
+                    echo "================ DEPLOYMENT ================"
+
                     kubectl get deployment \
                         -n ${K8S_NAMESPACE}
 
-                    echo "Pods:"
+                    echo "================ PODS ================"
+
                     kubectl get pods \
                         -n ${K8S_NAMESPACE} \
                         -o wide
 
-                    echo "Services:"
+                    echo "================ SERVICES ================"
+
                     kubectl get svc \
                         -n ${K8S_NAMESPACE}
                 '''
             }
         }
     }
+
 
     post {
 
@@ -267,38 +384,51 @@ pipeline {
             ============================================
                     PIPELINE SUCCESS
             ============================================
-
             Build: ${BUILD_NUMBER}
-            Image: ${IMAGE_NAME}:${IMAGE_TAG}
+
+            Image:
+            ${IMAGE_NAME}:${IMAGE_TAG}
 
             Docker Image Security : PASSED
             Kubernetes Security   : PASSED
-            Kubernetes Deployment  : SUCCESS
+            Kubernetes Deployment : SUCCESS
 
             ============================================
             """
         }
+
 
         failure {
             echo """
             ============================================
                     PIPELINE FAILED
             ============================================
-
             Build: ${BUILD_NUMBER}
 
-            Check the Jenkins Console Output
-            and Trivy reports.
+            The pipeline was stopped because
+            a security gate failed.
+
+            Check:
+            1. Trivy image report
+            2. Trivy SBOM
+            3. Jenkins Console Output
 
             ============================================
             """
         }
 
+
         always {
             echo "Archiving Trivy reports..."
 
             archiveArtifacts(
-                artifacts: 'trivy-image-scan.txt,trivy-image-report.json,trivy-k8s-scan.txt,trivy-k8s-report.json',
+                artifacts: '''
+                    trivy-image-scan.txt,
+                    trivy-image-report.json,
+                    trivy-image-sbom.json,
+                    trivy-k8s-scan.txt,
+                    trivy-k8s-report.json
+                ''',
                 allowEmptyArchive: true
             )
 
