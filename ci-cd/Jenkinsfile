@@ -17,6 +17,10 @@ pipeline {
 
     stages {
 
+        // ============================================================
+        // 1. CHECKOUT
+        // ============================================================
+
         stage('Checkout') {
             steps {
                 echo "Checking out source code..."
@@ -34,19 +38,31 @@ pipeline {
         }
 
 
+        // ============================================================
+        // 2. BUILD DOCKER IMAGE
+        // ============================================================
+
         stage('Build Docker Image') {
             steps {
-                echo "Building Alpine-based Docker image..."
+                echo "Building Docker image..."
 
                 sh '''
                     docker build \
                         -f app/Dockerfile \
                         -t ${IMAGE_NAME}:${IMAGE_TAG} \
                         app
+
+                    echo "================ IMAGE BUILT ================"
+
+                    docker images ${IMAGE_NAME}
                 '''
             }
         }
 
+
+        // ============================================================
+        // 3. VERIFY DOCKER IMAGE
+        // ============================================================
 
         stage('Verify Docker Image') {
             steps {
@@ -55,13 +71,16 @@ pipeline {
                 sh '''
                     echo "================ IMAGE INSPECT ================"
 
-                    docker image inspect ${IMAGE_NAME}:${IMAGE_TAG}
+                    docker image inspect \
+                        ${IMAGE_NAME}:${IMAGE_TAG}
+
 
                     echo "================ RUNNING USER ================"
 
                     docker run --rm \
                         ${IMAGE_NAME}:${IMAGE_TAG} \
                         id
+
 
                     echo "================ PYTHON PACKAGES ================"
 
@@ -85,6 +104,10 @@ print('Msgpack:', msgpack.__version__)
         }
 
 
+        // ============================================================
+        // 4. TRIVY IMAGE SCAN
+        // ============================================================
+
         stage('Trivy Image Scan') {
             steps {
                 echo "Scanning Docker image with Trivy..."
@@ -101,6 +124,7 @@ print('Msgpack:', msgpack.__version__)
                         ${IMAGE_NAME}:${IMAGE_TAG} \
                         | tee trivy-image-scan.txt
 
+
                     echo "================ TRIVY JSON REPORT ================"
 
                     trivy image \
@@ -115,6 +139,10 @@ print('Msgpack:', msgpack.__version__)
             }
         }
 
+
+        // ============================================================
+        // 5. GENERATE SBOM
+        // ============================================================
 
         stage('Generate Trivy SBOM') {
             steps {
@@ -136,12 +164,16 @@ print('Msgpack:', msgpack.__version__)
         }
 
 
+        // ============================================================
+        // 6. VERIFY SBOM PACKAGES
+        // ============================================================
+
         stage('Verify Trivy SBOM Packages') {
             steps {
                 echo "Checking package versions detected by Trivy..."
 
                 sh '''
-                    echo "================ SEARCHING SBOM ================"
+                    echo "================ SBOM PACKAGE CHECK ================"
 
                     python3 - <<'PY'
 import json
@@ -162,6 +194,10 @@ PY
             }
         }
 
+
+        // ============================================================
+        // 7. PREPARE KUBERNETES SCAN
+        // ============================================================
 
         stage('Prepare Kubernetes Scan') {
             steps {
@@ -184,6 +220,10 @@ PY
         }
 
 
+        // ============================================================
+        // 8. TRIVY KUBERNETES SCAN
+        // ============================================================
+
         stage('Trivy Kubernetes Scan') {
             steps {
                 echo "Scanning Kubernetes configuration..."
@@ -198,6 +238,7 @@ PY
                         trivy-scan-k8s \
                         | tee trivy-k8s-scan.txt
 
+
                     echo "================ KUBERNETES JSON ================"
 
                     trivy config \
@@ -211,6 +252,10 @@ PY
         }
 
 
+        // ============================================================
+        // 9. PUBLISH SCAN RESULTS TO FASTAPI
+        // ============================================================
+
         stage('Publish Scan Results') {
             steps {
                 echo "Publishing scan results to FastAPI..."
@@ -223,6 +268,7 @@ PY
 
                     echo ""
 
+
                     echo "================ PUBLISH IMAGE REPORT ================"
 
                     curl -s --fail \
@@ -233,6 +279,7 @@ PY
                         || echo "Image report publishing failed"
 
                     echo ""
+
 
                     echo "================ PUBLISH K8S REPORT ================"
 
@@ -249,6 +296,10 @@ PY
         }
 
 
+        // ============================================================
+        // 10. SECURITY GATE
+        // ============================================================
+
         stage('Security Gate') {
             steps {
                 script {
@@ -256,6 +307,7 @@ PY
                     echo "============================================"
                     echo "              SECURITY GATE"
                     echo "============================================"
+
 
                     echo "Checking Docker image vulnerabilities..."
 
@@ -306,10 +358,7 @@ PY
 
 
                     if (imageGate != 0 || kubernetesGate != 0) {
-
-                        error(
-                            "Security Gate FAILED. Deployment stopped."
-                        )
+                        error("Security Gate FAILED. Deployment stopped.")
                     }
 
 
@@ -321,38 +370,125 @@ PY
         }
 
 
+        // ============================================================
+        // 11. LOAD IMAGE INTO MINIKUBE CONTAINERD
+        // ============================================================
+
+        stage('Load Image into Minikube') {
+            steps {
+                echo "Loading Docker image into Minikube containerd..."
+
+                sh '''
+                    echo "================ CHECK DOCKER IMAGE ================"
+
+                    docker image inspect \
+                        ${IMAGE_NAME}:${IMAGE_TAG} \
+                        > /dev/null
+
+                    echo "Image found:"
+                    docker images ${IMAGE_NAME}
+
+
+                    echo "================ SAVE DOCKER IMAGE ================"
+
+                    docker save \
+                        ${IMAGE_NAME}:${IMAGE_TAG} \
+                        -o /tmp/${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+                    ls -lh /tmp/${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+
+                    echo "================ IMPORT INTO MINIKUBE CONTAINERD ================"
+
+                    docker exec -i minikube \
+                        ctr -n k8s.io images import - \
+                        < /tmp/${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+
+                    echo "================ VERIFY MINIKUBE IMAGE ================"
+
+                    docker exec minikube \
+                        ctr -n k8s.io images ls \
+                        | grep "${IMAGE_NAME}"
+
+
+                    echo "================ CLEANUP ================"
+
+                    rm -f /tmp/${IMAGE_NAME}-${IMAGE_TAG}.tar
+
+
+                    echo "============================================"
+                    echo "✅ IMAGE LOADED INTO MINIKUBE"
+                    echo "============================================"
+                '''
+            }
+        }
+
+
+        // ============================================================
+        // 12. DEPLOY TO KUBERNETES
+        // ============================================================
+
         stage('Deploy to Kubernetes') {
             steps {
-                echo "Deploying to Minikube..."
+                echo "Deploying application to Minikube..."
 
                 sh '''
                     export KUBECONFIG=${KUBECONFIG}
 
+
                     echo "================ KUBERNETES NODES ================"
 
                     kubectl get nodes
+
 
                     echo "================ APPLY NAMESPACE ================"
 
                     kubectl apply \
                         -f k8s/namespace.yaml
 
+
                     echo "================ APPLY DEPLOYMENT ================"
 
                     kubectl apply \
                         -f k8s/deployment.yaml
+
 
                     echo "================ APPLY SERVICE ================"
 
                     kubectl apply \
                         -f k8s/service.yaml
 
+
                     echo "================ UPDATE IMAGE ================"
 
                     kubectl set image \
                         deployment/${K8S_DEPLOYMENT} \
-                        ${K8S_DEPLOYMENT}=${IMAGE_NAME}:${IMAGE_TAG} \
+                        demo-target-service=${IMAGE_NAME}:${IMAGE_TAG} \
                         -n ${K8S_NAMESPACE}
+
+
+                    echo "================ SET IMAGE PULL POLICY ================"
+
+                    kubectl patch deployment \
+                        ${K8S_DEPLOYMENT} \
+                        -n ${K8S_NAMESPACE} \
+                        -p '{"spec":{"template":{"spec":{"containers":[{"name":"demo-target-service","imagePullPolicy":"IfNotPresent"}]}}}}'
+
+
+                    echo "================ CHECK DEPLOYMENT ================"
+
+                    kubectl get deployment \
+                        ${K8S_DEPLOYMENT} \
+                        -n ${K8S_NAMESPACE}
+
+
+                    echo "================ CHECK PODS ================"
+
+                    kubectl get pods \
+                        -n ${K8S_NAMESPACE} \
+                        -o wide
+
 
                     echo "================ WAIT FOR ROLLOUT ================"
 
@@ -361,26 +497,44 @@ PY
                         -n ${K8S_NAMESPACE} \
                         --timeout=180s
 
-                    echo "================ DEPLOYMENT ================"
+
+                    echo "================ FINAL DEPLOYMENT ================"
 
                     kubectl get deployment \
+                        ${K8S_DEPLOYMENT} \
                         -n ${K8S_NAMESPACE}
 
-                    echo "================ PODS ================"
+
+                    echo "================ FINAL PODS ================"
 
                     kubectl get pods \
                         -n ${K8S_NAMESPACE} \
                         -o wide
 
+
                     echo "================ SERVICES ================"
 
                     kubectl get svc \
                         -n ${K8S_NAMESPACE}
+
+
+                    echo "================ DEPLOYED IMAGE ================"
+
+                    kubectl get deployment \
+                        ${K8S_DEPLOYMENT} \
+                        -n ${K8S_NAMESPACE} \
+                        -o jsonpath='{.spec.template.spec.containers[0].image}'
+
+                    echo ""
                 '''
             }
         }
     }
 
+
+    // ================================================================
+    // POST ACTIONS
+    // ================================================================
 
     post {
 
@@ -389,13 +543,16 @@ PY
             ============================================
                     PIPELINE SUCCESS
             ============================================
-            Build: ${BUILD_NUMBER}
+
+            Build:
+            ${BUILD_NUMBER}
 
             Image:
             ${IMAGE_NAME}:${IMAGE_TAG}
 
             Docker Image Security : PASSED
             Kubernetes Security   : PASSED
+            Minikube Image Load   : SUCCESS
             Kubernetes Deployment : SUCCESS
 
             ============================================
@@ -408,15 +565,19 @@ PY
             ============================================
                     PIPELINE FAILED
             ============================================
-            Build: ${BUILD_NUMBER}
 
-            The pipeline was stopped because
-            a security gate failed.
+            Build:
+            ${BUILD_NUMBER}
 
-            Check:
-            1. Trivy image report
-            2. Trivy SBOM
-            3. Jenkins Console Output
+            Check the Jenkins Console Output.
+
+            Possible failure areas:
+
+            1. Trivy security scan
+            2. Minikube containerd image import
+            3. Kubernetes deployment
+            4. Kubernetes pod startup
+            5. Kubernetes rollout timeout
 
             ============================================
             """
