@@ -1,407 +1,461 @@
-// Jenkinsfile — Container & Kubernetes Security Scanner
-//
-// Pipeline:
-// GitHub
-//   ↓
-// Jenkins
-//   ↓
-// Build Docker Image
-//   ↓
-// Trivy Image Scan
-//   ↓
-// Trivy Kubernetes/IaC Scan
-//   ↓
-// Security Gate
-//   ↓
-// Publish Results to FastAPI
-//   ↓
-// Deploy to Minikube
-//
-// Security gate blocks deployment when HIGH/CRITICAL
-// vulnerabilities are detected.
-
 pipeline {
 
     agent any
 
     environment {
+        APP_NAME = "demo-target-service"
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        IMAGE_NAME = "${APP_NAME}:${IMAGE_TAG}"
 
-        // Docker image
-        IMAGE_NAME = "demo-target-service"
-        IMAGE_TAG  = "${BUILD_NUMBER}"
-        FULL_IMAGE = "${IMAGE_NAME}:${IMAGE_TAG}"
-
-        // Trivy
         TRIVY_SEVERITY = "CRITICAL,HIGH"
         TRIVY_REPORT_DIR = "trivy-reports"
 
-        // FastAPI running on Windows host
         BACKEND_URL = "http://host.docker.internal:8000"
-
-        // Kubernetes
-        K8S_NAMESPACE = "secure-devops-demo"
         KUBECONFIG = "/var/jenkins_home/.kube/config"
+
+        K8S_NAMESPACE = "secure-devops-demo"
     }
 
     stages {
 
-        // ============================================================
-        // 1. CHECKOUT
-        // ============================================================
-
+        /*
+         * ==========================================
+         * 1. CHECKOUT
+         * ==========================================
+         */
         stage('Checkout') {
-
             steps {
-
-                echo "Checking out source code from GitHub..."
-
                 checkout scm
 
-                echo "Checkout completed."
+                sh '''
+                    echo "========================================"
+                    echo "Repository checkout completed"
+                    echo "========================================"
+
+                    git status
+                    git log -1 --oneline
+                '''
             }
         }
 
 
-        // ============================================================
-        // 2. BUILD DOCKER IMAGE
-        // ============================================================
-
-        stage('Build Docker Image') {
-
+        /*
+         * ==========================================
+         * 2. BUILD DOCKER IMAGE
+         * ==========================================
+         */
+        stage('Docker Build') {
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Building Docker image"
+                    echo "========================================"
 
-                echo "Building Docker image: ${FULL_IMAGE}"
+                    docker build \
+                        -t ${IMAGE_NAME} \
+                        ./app
 
-                dir('app') {
-
-                    sh """
-                        docker build \
-                            -t ${FULL_IMAGE} \
-                            -t ${IMAGE_NAME}:latest \
-                            .
-                    """
-                }
-
-                echo "Docker image built successfully."
+                    echo "Docker image built successfully:"
+                    docker images ${APP_NAME}
+                '''
             }
         }
 
 
-        // ============================================================
-        // 3. VERIFY DOCKER IMAGE
-        // ============================================================
-
+        /*
+         * ==========================================
+         * 3. VERIFY IMAGE
+         * ==========================================
+         */
         stage('Verify Docker Image') {
-
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Verifying Docker image"
+                    echo "========================================"
 
-                sh """
-                    docker images ${IMAGE_NAME}
-                """
+                    docker image inspect ${IMAGE_NAME}
+
+                    echo "Image verification successful."
+                '''
             }
         }
 
 
-        // ============================================================
-        // 4. TRIVY IMAGE SCAN
-        // ============================================================
-
-        stage('Trivy Image Scan') {
-
+        /*
+         * ==========================================
+         * 4. TRIVY IMAGE SCAN
+         * ==========================================
+         */
+        stage('Trivy Image Security Scan') {
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Trivy Docker Image Security Scan"
+                    echo "========================================"
 
-                sh """
                     mkdir -p ${TRIVY_REPORT_DIR}
-
-                    echo "Running Trivy image scan..."
 
                     trivy image \
                         --severity ${TRIVY_SEVERITY} \
                         --format json \
                         --output ${TRIVY_REPORT_DIR}/image-scan-report.json \
                         --exit-code 0 \
-                        ${FULL_IMAGE}
+                        ${IMAGE_NAME}
 
-                    echo "Trivy image scan completed."
-
-                    echo "Generating human-readable report..."
+                    echo ""
+                    echo "Generating human-readable image report..."
 
                     trivy image \
                         --severity ${TRIVY_SEVERITY} \
                         --format table \
                         --exit-code 0 \
-                        ${FULL_IMAGE} \
+                        ${IMAGE_NAME} \
                         > ${TRIVY_REPORT_DIR}/image-scan-report.txt
-                """
+
+                    echo ""
+                    echo "Trivy image scan completed."
+                '''
             }
         }
 
 
-        // ============================================================
-        // 5. TRIVY KUBERNETES / IaC CONFIG SCAN
-        // ============================================================
-
+        /*
+         * ==========================================
+         * 5. TRIVY KUBERNETES / IaC SCAN
+         * ==========================================
+         */
         stage('Trivy Kubernetes / IaC Config Scan') {
-
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Trivy Kubernetes / IaC Security Scan"
+                    echo "========================================"
 
-                sh """
                     mkdir -p ${TRIVY_REPORT_DIR}
 
-                    echo "Running Trivy Kubernetes configuration scan..."
+                    echo "Preparing Kubernetes manifests..."
+
+                    rm -rf trivy-scan-k8s
+                    mkdir -p trivy-scan-k8s
+
+                    cp k8s/deployment.yaml trivy-scan-k8s/
+                    cp k8s/namespace.yaml trivy-scan-k8s/
+                    cp k8s/service.yaml trivy-scan-k8s/
+
+                    echo ""
+                    echo "Files prepared for Trivy:"
+
+                    ls -la trivy-scan-k8s
+
+                    echo ""
+                    echo "Running Trivy configuration scan..."
 
                     trivy config \
                         --severity ${TRIVY_SEVERITY} \
                         --format json \
                         --output ${TRIVY_REPORT_DIR}/config-scan-report.json \
                         --exit-code 0 \
-                        k8s/deployment.yaml k8s/namespace.yaml k8s/service.yaml
+                        trivy-scan-k8s
 
-                    echo "Trivy configuration scan completed."
-
+                    echo ""
                     echo "Generating human-readable configuration report..."
 
                     trivy config \
                         --severity ${TRIVY_SEVERITY} \
                         --format table \
                         --exit-code 0 \
-                        k8s/deployment.yaml k8s/namespace.yaml k8s/service.yaml \
+                        trivy-scan-k8s \
                         > ${TRIVY_REPORT_DIR}/config-scan-report.txt
-                """
+
+                    echo ""
+                    echo "Trivy Kubernetes configuration scan completed."
+                '''
             }
         }
 
 
-        // ============================================================
-        // 6. SECURITY GATE
-        // ============================================================
-
+        /*
+         * ==========================================
+         * 6. SECURITY GATE
+         * ==========================================
+         */
         stage('Security Gate') {
-
             steps {
-
                 script {
 
-                    echo "=========================================="
-                    echo "        SECURITY GATE"
-                    echo "=========================================="
+                    echo "========================================"
+                    echo "SECURITY GATE"
+                    echo "========================================"
 
-                    echo "Checking Docker image for:"
-                    echo "${TRIVY_SEVERITY}"
-
-                    // ------------------------------------------------
-                    // Image security gate
-                    // ------------------------------------------------
-
+                    /*
+                     * IMAGE SECURITY GATE
+                     *
+                     * exit-code 1 means:
+                     * Pipeline will receive non-zero status
+                     * if HIGH or CRITICAL vulnerabilities exist.
+                     */
                     def imageGate = sh(
                         script: """
                             trivy image \
                                 --severity ${TRIVY_SEVERITY} \
                                 --exit-code 1 \
                                 --format table \
-                                ${FULL_IMAGE}
+                                ${IMAGE_NAME}
                         """,
                         returnStatus: true
                     )
 
-                    // ------------------------------------------------
-                    // Kubernetes/IaC security gate
-                    // ------------------------------------------------
 
+                    /*
+                     * KUBERNETES CONFIGURATION SECURITY GATE
+                     */
                     def configGate = sh(
                         script: """
                             trivy config \
                                 --severity ${TRIVY_SEVERITY} \
                                 --exit-code 1 \
                                 --format table \
-                                k8s/deployment.yaml k8s/namespace.yaml k8s/service.yaml
+                                trivy-scan-k8s
                         """,
                         returnStatus: true
                     )
 
-                    echo "Image gate exit code: ${imageGate}"
-                    echo "Config gate exit code: ${configGate}"
 
-                    // ------------------------------------------------
-                    // BLOCK DEPLOYMENT
-                    // ------------------------------------------------
+                    echo ""
+                    echo "========================================"
+                    echo "Security Gate Results"
+                    echo "========================================"
 
+                    echo "Docker Image Gate Result: ${imageGate}"
+                    echo "Kubernetes Config Gate Result: ${configGate}"
+
+
+                    /*
+                     * If either scan fails,
+                     * stop the pipeline.
+                     */
                     if (imageGate != 0 || configGate != 0) {
 
                         echo ""
-                        echo "=========================================="
-                        echo " SECURITY GATE FAILED"
-                        echo "=========================================="
-                        echo ""
-                        echo "HIGH/CRITICAL vulnerabilities detected."
-                        echo "Deployment to Kubernetes is BLOCKED."
-                        echo ""
+                        echo "========================================"
+                        echo "SECURITY GATE FAILED"
+                        echo "========================================"
 
-                        error(
-                            "Security gate failed. " +
-                            "Fix HIGH/CRITICAL vulnerabilities before deployment."
-                        )
+                        echo "HIGH or CRITICAL security issues detected."
+                        echo "Deployment will NOT continue."
+
+                        error("Security Gate Failed")
+
+                    } else {
+
+                        echo ""
+                        echo "========================================"
+                        echo "SECURITY GATE PASSED"
+                        echo "========================================"
+
+                        echo "No HIGH or CRITICAL issues detected."
+                        echo "Pipeline can continue to deployment."
                     }
-
-                    // ------------------------------------------------
-                    // ALLOW DEPLOYMENT
-                    // ------------------------------------------------
-
-                    echo ""
-                    echo "=========================================="
-                    echo " SECURITY GATE PASSED"
-                    echo "=========================================="
-                    echo ""
-                    echo "No HIGH/CRITICAL findings detected."
-                    echo "Deployment is allowed."
-                    echo ""
                 }
             }
         }
 
 
-        // ============================================================
-        // 7. PUBLISH TRIVY RESULTS TO FASTAPI
-        // ============================================================
-
-        stage('Publish Scan Results to Backend') {
-
+        /*
+         * ==========================================
+         * 7. PUBLISH SCAN RESULTS
+         * ==========================================
+         */
+        stage('Publish Scan Results') {
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Publishing scan results to FastAPI"
+                    echo "========================================"
 
-                sh """
-                    echo "Publishing Trivy image results to FastAPI..."
+                    if [ -f "${TRIVY_REPORT_DIR}/image-scan-report.json" ]; then
 
-                    curl -s -X POST \
-                        "${BACKEND_URL}/ingest/trivy-report?scan_type=image&target=${FULL_IMAGE}" \
-                        -H "Content-Type: application/json" \
-                        --data @${TRIVY_REPORT_DIR}/image-scan-report.json \
-                        || echo "FastAPI image ingestion failed — continuing."
+                        echo "Uploading Trivy image report..."
+
+                        curl -s -X POST \
+                            "${BACKEND_URL}/ingest/trivy-report" \
+                            -H "Content-Type: application/json" \
+                            --data-binary @"${TRIVY_REPORT_DIR}/image-scan-report.json" \
+                            || echo "Image report upload failed"
+
+                    fi
+
+
+                    if [ -f "${TRIVY_REPORT_DIR}/config-scan-report.json" ]; then
+
+                        echo "Uploading Trivy configuration report..."
+
+                        curl -s -X POST \
+                            "${BACKEND_URL}/ingest/trivy-report" \
+                            -H "Content-Type: application/json" \
+                            --data-binary @"${TRIVY_REPORT_DIR}/config-scan-report.json" \
+                            || echo "Config report upload failed"
+
+                    fi
 
                     echo ""
-
-                    echo "Publishing Trivy configuration results to FastAPI..."
-
-                    curl -s -X POST \
-                        "${BACKEND_URL}/ingest/trivy-report?scan_type=config&target=k8s-manifests" \
-                        -H "Content-Type: application/json" \
-                        --data @${TRIVY_REPORT_DIR}/config-scan-report.json \
-                        || echo "FastAPI config ingestion failed — continuing."
-
-                    echo ""
-
-                    echo "Scan results publishing completed."
-                """
+                    echo "Scan result publishing completed."
+                '''
             }
         }
 
 
-        // ============================================================
-        // 8. DEPLOY TO MINIKUBE
-        // ============================================================
-
-        stage('Deploy to Minikube') {
-
+        /*
+         * ==========================================
+         * 8. DEPLOY TO KUBERNETES
+         * ==========================================
+         */
+        stage('Deploy to Kubernetes') {
             steps {
+                sh '''
+                    echo "========================================"
+                    echo "Deploying to Kubernetes"
+                    echo "========================================"
 
-                echo "Deploying application to Minikube..."
+                    echo "Kubernetes cluster:"
+                    kubectl cluster-info
 
-                sh """
-                    echo "Current Kubernetes context:"
-                    kubectl config current-context
-
-                    echo "Kubernetes nodes:"
-                    kubectl get nodes
-
+                    echo ""
                     echo "Creating namespace if required..."
 
                     kubectl apply -f k8s/namespace.yaml
 
-                    echo "Deploying application..."
+                    echo ""
+                    echo "Applying deployment..."
 
                     kubectl apply -f k8s/deployment.yaml
 
-                    echo "Updating Docker image..."
-
-                    kubectl set image deployment/demo-target-service \
-                        demo-target-service=${FULL_IMAGE} \
-                        -n ${K8S_NAMESPACE}
-
+                    echo ""
                     echo "Applying service..."
 
                     kubectl apply -f k8s/service.yaml
 
-                    echo "Waiting for deployment..."
+                    echo ""
+                    echo "Updating deployment image..."
+
+                    kubectl set image \
+                        deployment/${APP_NAME} \
+                        ${APP_NAME}=${IMAGE_NAME} \
+                        -n ${K8S_NAMESPACE}
+
+                    echo ""
+                    echo "Waiting for deployment rollout..."
 
                     kubectl rollout status \
-                        deployment/demo-target-service \
+                        deployment/${APP_NAME} \
                         -n ${K8S_NAMESPACE} \
-                        --timeout=120s
+                        --timeout=180s
 
-                    echo "Deployment successful."
+                    echo ""
+                    echo "========================================"
+                    echo "KUBERNETES DEPLOYMENT SUCCESSFUL"
+                    echo "========================================"
 
+                    echo ""
                     echo "Pods:"
                     kubectl get pods -n ${K8S_NAMESPACE}
 
+                    echo ""
                     echo "Services:"
                     kubectl get services -n ${K8S_NAMESPACE}
-                """
+                '''
+            }
+        }
+
+
+        /*
+         * ==========================================
+         * 9. VERIFY DEPLOYMENT
+         * ==========================================
+         */
+        stage('Verify Deployment') {
+            steps {
+                sh '''
+                    echo "========================================"
+                    echo "Verifying Kubernetes Deployment"
+                    echo "========================================"
+
+                    kubectl get deployment \
+                        ${APP_NAME} \
+                        -n ${K8S_NAMESPACE}
+
+                    echo ""
+                    echo "Pod status:"
+
+                    kubectl get pods \
+                        -n ${K8S_NAMESPACE} \
+                        -o wide
+
+                    echo ""
+                    echo "Deployment verification completed."
+                '''
             }
         }
     }
 
 
-    // ================================================================
-    // POST ACTIONS
-    // ================================================================
-
+    /*
+     * ==========================================
+     * POST ACTIONS
+     * ==========================================
+     */
     post {
 
         success {
+            echo """
+            ========================================
+            PIPELINE SUCCESSFUL
+            ========================================
 
-            echo ""
-            echo "=========================================="
-            echo " PIPELINE SUCCESSFUL"
-            echo "=========================================="
-            echo ""
-            echo "Docker image:"
-            echo "${FULL_IMAGE}"
-            echo ""
-            echo "Security gate:"
-            echo "PASSED"
-            echo ""
-            echo "Deployment:"
-            echo "SUCCESSFUL"
-            echo ""
-            echo "Minikube namespace:"
-            echo "${K8S_NAMESPACE}"
-            echo ""
+            Application : ${APP_NAME}
+            Image       : ${IMAGE_NAME}
+            Namespace   : ${K8S_NAMESPACE}
+
+            Security scans passed.
+            Kubernetes deployment completed.
+            ========================================
+            """
         }
 
 
         failure {
+            echo """
+            ========================================
+            PIPELINE FAILED
+            ========================================
 
-            echo ""
-            echo "=========================================="
-            echo " PIPELINE FAILED"
-            echo "=========================================="
-            echo ""
-            echo "The pipeline failed."
-            echo "Check the Jenkins console output."
-            echo ""
+            Application : ${APP_NAME}
+            Build       : ${BUILD_NUMBER}
 
-            // Slack is optional for now.
-            // We will configure Slack after the pipeline works.
+            Check the Jenkins console output
+            for security or deployment errors.
+
+            Deployment was blocked if the
+            Security Gate failed.
+            ========================================
+            """
         }
 
 
         always {
-
             echo "Archiving Trivy reports..."
 
             archiveArtifacts(
-                artifacts: 'trivy-reports/*',
+                artifacts: 'trivy-reports/*.json,trivy-reports/*.txt',
                 allowEmptyArchive: true
             )
+
+            echo "Cleaning temporary Trivy Kubernetes directory..."
+
+            sh '''
+                rm -rf trivy-scan-k8s
+            '''
         }
     }
 }
