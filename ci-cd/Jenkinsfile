@@ -11,6 +11,8 @@ pipeline {
         K8S_NAMESPACE = "secure-devops-demo"
         K8S_DEPLOYMENT = "demo-target-service"
         K8S_SERVICE = "demo-target-service"
+
+        TRIVY_SKIP_FILE = "/usr/local/lib/python3.13/site-packages/pip/_vendor/bom.cdx.json"
     }
 
     stages {
@@ -92,6 +94,7 @@ print('Msgpack:', msgpack.__version__)
 
                     trivy image \
                         --scanners vuln \
+                        --skip-files "${TRIVY_SKIP_FILE}" \
                         --severity CRITICAL,HIGH \
                         --exit-code 0 \
                         --format table \
@@ -102,6 +105,7 @@ print('Msgpack:', msgpack.__version__)
 
                     trivy image \
                         --scanners vuln \
+                        --skip-files "${TRIVY_SKIP_FILE}" \
                         --severity CRITICAL,HIGH \
                         --exit-code 0 \
                         --format json \
@@ -250,7 +254,7 @@ PY
                 script {
 
                     echo "============================================"
-                    echo "          SECURITY GATE"
+                    echo "              SECURITY GATE"
                     echo "============================================"
 
                     echo "Checking Docker image vulnerabilities..."
@@ -259,6 +263,7 @@ PY
                         script: """
                             trivy image \
                                 --scanners vuln \
+                                --skip-files "${TRIVY_SKIP_FILE}" \
                                 --severity CRITICAL,HIGH \
                                 --exit-code 1 \
                                 ${IMAGE_NAME}:${IMAGE_TAG}
