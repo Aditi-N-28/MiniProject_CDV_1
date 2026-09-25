@@ -5,7 +5,7 @@ Reads from the FastAPI backend (backend/main.py) and visualises:
   - Falco runtime events
   - Isolation Forest anomaly scores over time
 
-Run with:  streamlit run streamlit_app.py
+use this command to run the dashboard file:  streamlit run streamlit_app.py
 (make sure the backend is running first: uvicorn main:app, from backend/)
 """
 import os
