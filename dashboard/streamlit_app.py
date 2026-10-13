@@ -1,13 +1,3 @@
-"""
-Security dashboard for the Container & Kubernetes Security Scanner project.
-Reads from the FastAPI backend (backend/main.py) and visualises:
-  - Trivy pre-deployment scan results (pass/fail, severity breakdown)
-  - Falco runtime events
-  - Isolation Forest anomaly scores over time
-
-use this command to run the dashboard file:  streamlit run streamlit_app.py
-(make sure the backend is running first: uvicorn main:app, from backend/)
-"""
 import os
 import pandas as pd
 import plotly.express as px
@@ -19,6 +9,12 @@ BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 st.set_page_config(page_title="Container & K8s Security Scanner", layout="wide")
 st.title("🛡️ Container & Kubernetes Security Scanner — Dashboard")
 st.caption(f"Backend: {BACKEND_URL}")
+def calculate_container_risk(trivy_critical_count, trivy_high_count, falco_alert_frequency):
+    alpha = 0.4
+    beta = 0.3
+    gamma = 0.3
+    risk_score = (alpha * trivy_critical_count) + (beta * trivy_high_count) + (gamma * falco_alert_frequency)
+    return round(min(risk_score, 10.0), 2)
 
 
 @st.cache_data(ttl=5)
@@ -42,10 +38,11 @@ with tab_scans:
     if df.empty:
         st.info("No scan results yet. Run the Jenkins pipeline (or POST to /scan-results) to populate this.")
     else:
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total scans", len(df))
         col2.metric("Passed", int(df["passed"].sum()))
         col3.metric("Failed (blocked deployment)", int((~df["passed"]).sum()))
+        col4.metric("Composite Risk Index", f"{calculate_container_risk(int(df['critical_count'].sum()), int(df['high_count'].sum()), 1)} / 10")
 
         st.subheader("Severity findings per scan")
         melted = df.melt(
