@@ -17,3 +17,5 @@ dashboard/*.log
 
 # OS
 .DS_Store
+
+*.json
